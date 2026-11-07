@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { analyzeReportWithDeepSeek, runRulesOnlyFallback } from './src/deepseek.mjs';
+import { analyzeReportWithDeepSeek, runRulesOnlyFallback, generateEvidentialChatResponse } from './src/deepseek.mjs';
 import { calculateHazardLevel, findPotentialDuplicates, prepareAlertDraft } from './src/rules-engine.mjs';
 import { NotificationGateway } from './src/notification-gateway.mjs';
 import { DataStore } from './src/store.mjs';
@@ -303,29 +303,18 @@ export const server = createServer(async (req, res) => {
       });
     }
 
-    // CHAT CONVERSACIONAL: Ellie Asistente
+    // CHAT CONVERSACIONAL: Ellie Asistente (DeepSeek con Evidencias Multi-Capa)
     if (req.method === 'POST' && pathname === '/api/chat') {
       const b = await parseBody(req);
-      const message = String(b.message || '').trim().toLowerCase();
+      const rawMessage = String(b.message || '').trim();
       const existingReports = Array.from(store.incidents.values());
 
-      let responsePayload;
+      let responsePayload = await generateEvidentialChatResponse({
+        message: rawMessage,
+        existingReports
+      });
 
-      if (message.includes('duplicad') || message.includes('coincid')) {
-        const sampleReport = existingReports[0] || { type: 'desborde_rio', sector: 'Malecón Eguiguren' };
-        const dups = findPotentialDuplicates(sampleReport, existingReports);
-        responsePayload = {
-          summary: `Se analizaron ${existingReports.length} reportes activos. Se identificaron ${dups.length} posibles coincidencias en el mismo sector y ventana temporal.`,
-          source_reports: existingReports.map(r => r.public_code),
-          confidence: 0.88,
-          missing: ['inspección visual de terreno'],
-          contradicciones: 'Ninguna detectada en timestamps analizados.',
-          provider: process.env.DEEPSEEK_API_KEY ? 'DeepSeek' : 'RULES-ONLY',
-          model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-          duplicates: dups,
-          actions: ['Ver evidencia', 'Solicitar revisión humana']
-        };
-      } else if (message.includes('borrador') || message.includes('alerta') || message.includes('prepara')) {
+      if (/borrador|alerta|prepar/i.test(rawMessage)) {
         const latestIncident = existingReports[0] || {
           id: randomUUID(),
           public_code: 'REP-DEMO-01',
@@ -339,55 +328,7 @@ export const server = createServer(async (req, res) => {
           sector: latestIncident.sector,
           radius_m: 1500
         });
-        responsePayload = {
-          summary: `Borrador preparado a partir del reporte ${latestIncident.public_code}. Requiere revisión y validación de una persona moderadora antes de su aprobación.`,
-          source_reports: [latestIncident.public_code],
-          confidence: 0.82,
-          missing: ['confirmación de caudal por estación Chira-Piura'],
-          contradicciones: 'Sin discrepancias aparentes.',
-          provider: process.env.DEEPSEEK_API_KEY ? 'DeepSeek' : 'RULES-ONLY',
-          model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-          draft_alert: draft,
-          actions: ['Preparar borrador', 'Revisar evidencia', 'Aprobar y programar']
-        };
-      } else if (message.includes('falta') || message.includes('informacion')) {
-        responsePayload = {
-          summary: 'La principal información faltante en los reportes comunitarios actuales incluye: coordenadas exactas con consentimiento, fotos con hora comprobada y validación de entidades de primera respuesta.',
-          source_reports: existingReports.slice(0, 3).map(r => r.public_code),
-          confidence: 0.75,
-          missing: ['registro fotográfico', 'nivel de agua en centímetros', 'sentido de evacuación'],
-          contradicciones: 'No hay reportes opuestos registrados en la última hora.',
-          provider: process.env.DEEPSEEK_API_KEY ? 'DeepSeek' : 'RULES-ONLY',
-          model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-          actions: ['Ver evidencia', 'Solicitar revisión humana']
-        };
-      } else if (message.includes('abstuviste') || message.includes('abstencion')) {
-        responsePayload = {
-          summary: 'Regla de abstención activa: Ellie Asistente se abstiene de confirmar zonas o elevar alertas cuando la confianza objetiva es menor al 70% o no existe evidencia verificable en terreno.',
-          source_reports: [],
-          confidence: 0.50,
-          missing: ['evidencia física', 'aprobación de autoridad'],
-          contradicciones: 'N/A',
-          provider: 'RULES-ONLY',
-          model: 'deterministic-guardrails',
-          actions: ['Ver política de seguridad', 'Solicitar revisión humana']
-        };
-      } else {
-        // Resumen general de lo que están reportando las personas
-        const typesCount = {};
-        for (const r of existingReports) {
-          typesCount[r.type] = (typesCount[r.type] || 0) + 1;
-        }
-        responsePayload = {
-          summary: `Actualmente hay ${existingReports.length} reportes registrados en Piura. Los eventos principales son desborde/crecida (${typesCount['desborde_rio'] || 1}) y vías anegadas (${typesCount['via_bloqueada'] || 1}). Todos los casos están en revisión humana.`,
-          source_reports: existingReports.map(r => r.public_code),
-          confidence: 0.85,
-          missing: ['reportes de sectores periféricos (Bajo Piura, Catacaos)'],
-          contradicciones: 'Ninguna contradicción crítica detectada.',
-          provider: process.env.DEEPSEEK_API_KEY ? 'DeepSeek' : 'RULES-ONLY',
-          model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-          actions: ['Ver evidencia', 'Preparar borrador', 'Solicitar revisión humana']
-        };
+        responsePayload.draft_alert = draft;
       }
 
       return sendJson(res, 200, {

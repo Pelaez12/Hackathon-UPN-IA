@@ -7,7 +7,7 @@
  * - Manejo de clics en notificaciones
  */
 
-const CACHE_NAME = 'ellie-piura-v3';
+const CACHE_NAME = 'ellie-piura-v4';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
